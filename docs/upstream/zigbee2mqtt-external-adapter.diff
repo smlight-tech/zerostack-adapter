@@ -1,0 +1,32 @@
+diff --git a/lib/types/api.ts b/lib/types/api.ts
+--- a/lib/types/api.ts
++++ b/lib/types/api.ts
+@@ -139,7 +139,8 @@
+     serial: {
+         disable_led: boolean;
+         port?: string;
+-        adapter?: "deconz" | "zstack" | "ezsp" | "zigate" | "ember" | "zboss" | "zoh";
++        /** A built-in adapter, or a module specifier of an external one (package name, absolute path, `file://` URL). */
++        adapter?: "deconz" | "zstack" | "ezsp" | "zigate" | "ember" | "zboss" | "zoh" | (string & {});
+         baudrate?: number;
+         rtscts?: boolean;
+     };
+diff --git a/lib/util/settings.schema.json b/lib/util/settings.schema.json
+--- a/lib/util/settings.schema.json
++++ b/lib/util/settings.schema.json
+@@ -250,10 +250,13 @@
+                 },
+                 "adapter": {
+                     "type": "string",
+-                    "enum": ["deconz", "zstack", "zigate", "ezsp", "ember", "zboss", "zoh"],
++                    "anyOf": [
++                        {"enum": ["deconz", "zstack", "zigate", "ezsp", "ember", "zboss", "zoh"]},
++                        {"pattern": "^(@[a-z0-9-~][a-z0-9-._~]*/[a-z0-9-~][a-z0-9-._~]*|[a-z0-9-~][a-z0-9-._~]*|/.+|\\./.+|file://.+)$"}
++                    ],
+                     "title": "Adapter",
+                     "requiresRestart": true,
+-                    "description": "Adapter type, not needed unless you are experiencing problems"
++                    "description": "Adapter type, not needed unless you are experiencing problems. Besides the built-in types, the name of an installed adapter package or the path of an adapter module."
+                 },
+                 "baudrate": {
+                     "type": "number",

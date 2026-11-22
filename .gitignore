@@ -1,0 +1,10 @@
+/target
+node_modules
+/dist
+*.node
+test/.run
+/core
+/core.*
+.env
+*.swp
+.codex/

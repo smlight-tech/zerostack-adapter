@@ -1,0 +1,107 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 SMLIGHT
+#
+# The proposed external-adapter change (docs/upstream/) as its compiled equivalent, for the
+# Zigbee2MQTT container image: the zigbee-herdsman v11.2.1 TypeScript diff rewritten as the same
+# logic in the image's compiled JavaScript (node_modules/zigbee-herdsman/dist/adapter/adapter.js and
+# adapterDiscovery.js), and the settings schema change in dist/util/settings.schema.json. Paths are
+# relative to the image's application directory. The TypeScript-only parts (tstype.ts, api.ts) have
+# no runtime code. scripts/z2m-e2e.sh applies it with test/e2e/apply-diff.mjs inside a throwaway
+# container at start; the image itself is never changed.
+--- a/dist/util/settings.schema.json
++++ b/dist/util/settings.schema.json
+@@ -250,10 +250,13 @@
+                 },
+                 "adapter": {
+                     "type": "string",
+-                    "enum": ["deconz", "zstack", "zigate", "ezsp", "ember", "zboss", "zoh"],
++                    "anyOf": [
++                        {"enum": ["deconz", "zstack", "zigate", "ezsp", "ember", "zboss", "zoh"]},
++                        {"pattern": "^(@[a-z0-9-~][a-z0-9-._~]*/[a-z0-9-~][a-z0-9-._~]*|[a-z0-9-~][a-z0-9-._~]*|/.+|\\./.+|file://.+)$"}
++                    ],
+                     "title": "Adapter",
+                     "requiresRestart": true,
+-                    "description": "Adapter type, not needed unless you are experiencing problems"
++                    "description": "Adapter type, not needed unless you are experiencing problems. Besides the built-in types, the name of an installed adapter package or the path of an adapter module."
+                 },
+                 "baudrate": {
+                     "type": "number",
+--- a/node_modules/zigbee-herdsman/dist/adapter/adapterDiscovery.js
++++ b/node_modules/zigbee-herdsman/dist/adapter/adapterDiscovery.js
+@@ -10,12 +10,18 @@
+ exports.findTcpAdapter = findTcpAdapter;
+ exports.discoverAdapter = discoverAdapter;
+ exports.findAllDevices = findAllDevices;
++exports.isExternalAdapter = isExternalAdapter;
+ const node_assert_1 = __importDefault(require("node:assert"));
+ const node_os_1 = require("node:os");
+ const bindings_cpp_1 = require("@serialport/bindings-cpp");
+ const bonjour_service_1 = require("bonjour-service");
+ const utils_1 = require("../utils");
+ const logger_1 = require("../utils/logger");
++const ADAPTERS = ["deconz", "ember", "zstack", "zboss", "zigate", "ezsp", "zoh"];
++/** Whether `adapter` names a module outside this package instead of a built-in adapter. */
++function isExternalAdapter(adapter) {
++    return adapter !== undefined && !ADAPTERS.includes(adapter);
++}
+ const NS = "zh:adapter:discovery";
+ /**
+  * @see https://serialport.io/docs/api-bindings-cpp#list
+@@ -577,6 +583,13 @@
+  * @returns path Path to adapter.
+  */
+ async function discoverAdapter(adapter, path) {
++    if (isExternalAdapter(adapter)) {
++        if (!path) {
++            throw new Error(`External adapter '${adapter}' needs a 'port'.`);
++        }
++        // only built-in adapters have USB fingerprints; TCP paths keep their `tcp://` format
++        return path.startsWith("tcp://") || path.startsWith("socket://") ? findTcpAdapter(path, adapter) : { adapter, path };
++    }
+     if (path) {
+         if (path.startsWith("mdns://")) {
+             return await findMdnsAdapter(path);
+--- a/node_modules/zigbee-herdsman/dist/adapter/adapter.js
++++ b/node_modules/zigbee-herdsman/dist/adapter/adapter.js
+@@ -38,9 +38,30 @@
+ Object.defineProperty(exports, "__esModule", { value: true });
+ exports.Adapter = void 0;
+ const node_events_1 = __importDefault(require("node:events"));
++const node_path_1 = require("node:path");
++const node_url_1 = require("node:url");
+ const Zcl = __importStar(require("../zspec/zcl"));
+ const adapterDiscovery_1 = require("./adapterDiscovery");
+ const transport_1 = require("./transport");
++/**
++ * Imports an external adapter: a package name resolves from this package, a path or `file://` URL as a file.
++ * The module's `Adapter` export (or default export) must extend this `Adapter` class.
++ */
++async function loadExternalAdapter(specifier) {
++    const url = specifier.startsWith("file://") || !((0, node_path_1.isAbsolute)(specifier) || specifier.startsWith(".")) ? specifier : (0, node_url_1.pathToFileURL)((0, node_path_1.resolve)(specifier)).href;
++    let module;
++    try {
++        module = await import(url);
++    }
++    catch (error) {
++        throw new Error(`Adapter '${specifier}' is neither a built-in adapter (zstack, ember, deconz, zigate, zboss, zoh, ezsp) nor an importable module`, { cause: error });
++    }
++    const candidate = module.Adapter ?? module.default;
++    if (typeof candidate !== "function" || !(candidate.prototype instanceof Adapter)) {
++        throw new Error(`External adapter '${specifier}' exports no subclass of zigbee-herdsman's Adapter as 'Adapter' or default`);
++    }
++    return candidate;
++}
+ class Adapter extends node_events_1.default.EventEmitter {
+     hasZdoMessageOverhead;
+     manufacturerID;
+@@ -102,6 +123,10 @@
+                 return new EZSPAdapter(networkOptions, transportOptions, backupPath, adapterOptions);
+             }
+             default: {
++                if ((0, adapterDiscovery_1.isExternalAdapter)(discovered.adapter)) {
++                    const External = await loadExternalAdapter(discovered.adapter);
++                    return new External(networkOptions, transportOptions, backupPath, adapterOptions);
++                }
+                 throw new Error(`Adapter '${discovered.adapter}' does not exists, possible options: zstack, ember, deconz, zigate, zboss, zoh, ezsp`);
+             }
+         }

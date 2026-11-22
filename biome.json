@@ -1,0 +1,49 @@
+{
+    "$schema": "https://biomejs.dev/schemas/2.6.7/schema.json",
+    "root": true,
+    "vcs": {
+        "enabled": true,
+        "clientKind": "git",
+        "useIgnoreFile": true
+    },
+    "formatter": {
+        "indentStyle": "space",
+        "indentWidth": 4,
+        "lineWidth": 150,
+        "bracketSpacing": false
+    },
+    "files": {
+        "includes": ["**", "!package.json", "!package-lock.json", "!**/*.md", "!!**/dist", "!!**/node_modules"]
+    },
+    "linter": {
+        "rules": {
+            "correctness": {
+                "noUnusedImports": "error",
+                "noUnusedVariables": "error"
+            },
+            "style": {
+                "noParameterAssign": "error",
+                "noNonNullAssertion": "error",
+                "useThrowNewError": "error",
+                "useThrowOnlyError": "error",
+                "useAsConstAssertion": "error",
+                "useDefaultParameterLast": "error",
+                "useEnumInitializers": "error",
+                "useSingleVarDeclarator": "error",
+                "noUnusedTemplateLiteral": "error",
+                "useNumberNamespace": "error",
+                "noInferrableTypes": "error",
+                "noUselessElse": "error"
+            },
+            "suspicious": {
+                "noExplicitAny": "error",
+                "useAwait": "error"
+            },
+            "nursery": {
+                "useExhaustiveSwitchCases": "error",
+                "noFloatingPromises": "error",
+                "noMisusedPromises": "error"
+            }
+        }
+    }
+}

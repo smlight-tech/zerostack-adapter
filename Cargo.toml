@@ -1,0 +1,41 @@
+[package]
+name = "zerostack-adapter"
+version = "0.1.3"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+description = "SMLIGHT ZeroStack zigbee-herdsman adapter: Node-API addon for raw APS access to ZeroStack coordinators"
+publish = false
+
+[lib]
+name = "zerostack_adapter"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+napi = { version = "3.16", features = ["async"] }
+napi-derive = "3.7"
+subtle = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+tokio-serial = { version = "5.5", default-features = false }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+
+[build-dependencies]
+napi-build = "2.6"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+bare_urls = "warn"
+invalid_html_tags = "deny"
+
+[lints.clippy]
+missing_safety_doc = "deny"
+empty_docs = "deny"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = "symbols"
+panic = "unwind"

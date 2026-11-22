@@ -1,0 +1,61 @@
+{
+    "name": "@smlight/zerostack-adapter",
+    "version": "0.1.3",
+    "description": "SMLIGHT ZeroStack zigbee-herdsman adapter: a native ZeroStack coordinator addon for zigbee-herdsman",
+    "license": "MIT",
+    "author": "SMLIGHT",
+    "homepage": "https://github.com/smlight-tech/zerostack-adapter",
+    "bugs": {
+        "url": "https://github.com/smlight-tech/zerostack-adapter/issues"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/smlight-tech/zerostack-adapter.git"
+    },
+    "publishConfig": {
+        "access": "public"
+    },
+    "keywords": ["zigbee", "zigbee-herdsman", "zigbee2mqtt", "zerostack", "smlight", "coordinator", "napi"],
+    "type": "module",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "engines": {
+        "node": "^22.2.0 || ^24 || <=26.2"
+    },
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "default": "./dist/index.js"
+        },
+        "./register": {
+            "types": "./dist/hook.d.ts",
+            "default": "./dist/hook.js"
+        }
+    },
+    "files": ["dist", "native.d.ts", "zerostack_adapter.*.node"],
+    "scripts": {
+        "prepack": "node -e \"if (process.env.ZS_ALLOW_PARTIAL_PACK === '1') process.exit(0); const fs = require('node:fs'); const tags = ['linux-x64-gnu', 'linux-arm64-gnu', 'linux-x64-musl', 'linux-arm64-musl', 'darwin-arm64', 'darwin-x64', 'win32-x64-msvc']; const missing = tags.filter((t) => !fs.existsSync('zerostack_adapter.' + t + '.node')); if (missing.length) { console.error('Missing prebuilt addons: ' + missing.map((t) => 'zerostack_adapter.' + t + '.node').join(', ') + ' (set ZS_ALLOW_PARTIAL_PACK=1 for local dry-runs)'); process.exit(1); }\"",
+        "build": "npm run build:addon && npm run build:ts",
+        "build:addon": "sh scripts/build-addon.sh",
+        "build:ts": "node -e \"require('node:fs').rmSync('dist', {recursive: true, force: true})\" && tsc -p tsconfig.build.json",
+        "lint": "sh scripts/lint.sh",
+        "test": "npm run test:rust && npm run test:unit && npm run test:node",
+        "test:rust": "cargo test --locked",
+        "test:unit": "vitest run",
+        "test:node": "node --test test/*.test.mjs",
+        "test:z2m": "sh scripts/z2m-e2e.sh"
+    },
+    "peerDependencies": {
+        "zigbee-herdsman": "^11.2.0"
+    },
+    "devDependencies": {
+        "@biomejs/biome": "^2.6.7",
+        "@types/node": "^24.0.0",
+        "typescript": "^7.0.2",
+        "vitest": "^4.1.12",
+        "zigbee-herdsman": "11.2.1"
+    },
+    "overrides": {
+        "vite": "^7.3.8"
+    }
+}

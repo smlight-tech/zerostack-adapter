@@ -1,0 +1,294 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 SMLIGHT
+
+name: Release
+
+on:
+    push:
+        tags:
+            - "v*"
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+jobs:
+    gate:
+        name: Lint & Test Gate
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+            - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+              with:
+                  node-version: 24
+                  cache: npm
+            - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+              with:
+                  toolchain: 1.99.1
+                  components: rustfmt, clippy
+            - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+            - run: npm ci
+            - run: npm run lint
+            - run: npm run build
+            - run: npm test
+            - run: npm audit --audit-level=moderate
+
+    prebuild-zig:
+        name: Prebuild (${{ matrix.tag }})
+        needs: gate
+        runs-on: ubuntu-latest
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - tag: linux-x64-gnu
+                      target: x86_64-unknown-linux-gnu.2.28
+                      rustflags: ""
+                    - tag: linux-arm64-gnu
+                      target: aarch64-unknown-linux-gnu.2.28
+                      rustflags: ""
+                    - tag: linux-x64-musl
+                      target: x86_64-unknown-linux-musl
+                      rustflags: "-C target-feature=-crt-static"
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+            - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+              with:
+                  toolchain: 1.99.1
+                  targets: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-unknown-linux-musl
+            - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+              with:
+                  key: ${{ matrix.tag }}
+            - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+            - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+              with:
+                  node-version: 24
+            - name: Install zig and cargo-zigbuild
+              run: |
+                  uv venv "$RUNNER_TEMP/zig"
+                  uv pip install --python "$RUNNER_TEMP/zig/bin/python" ziglang==0.13.0
+                  echo "$RUNNER_TEMP/zig/bin" >> "$GITHUB_PATH"
+                  cargo install cargo-zigbuild --locked --version 0.23.0
+            - name: Stamp version from tag
+              if: startsWith(github.ref, 'refs/tags/v')
+              run: node scripts/set-version.mjs "${GITHUB_REF_NAME#v}"
+            - name: Build addon
+              env:
+                  CARGO_SUBCOMMAND: zigbuild
+                  CARGO_BUILD_TARGET: ${{ matrix.target }}
+                  RUSTFLAGS: ${{ matrix.rustflags }}
+              run: |
+                  sh scripts/build-addon.sh
+                  mv zerostack_adapter.node "zerostack_adapter.${{ matrix.tag }}.node"
+            - name: Smoke test addon
+              run: |
+                  addon="zerostack_adapter.${{ matrix.tag }}.node"
+                  case "${{ matrix.tag }}" in
+                      linux-x64-gnu)
+                          node -e "const m = require('./$addon'); if (typeof m.ZsCoordinator?.open !== 'function') throw new Error('missing ZsCoordinator.open');"
+                          ;;
+                      linux-x64-musl)
+                          docker run --rm -v "$PWD:/work" -w /work node:24-alpine \
+                              node -e "const m = require('./$addon'); if (typeof m.ZsCoordinator?.open !== 'function') throw new Error('missing ZsCoordinator.open');"
+                          ;;
+                      linux-arm64-gnu)
+                          readelf -h "$addon" | grep -q AArch64
+                          python3 - "$addon" <<'PY'
+                  import re, subprocess, sys
+                  out = subprocess.check_output(["readelf", "-V", "-W", sys.argv[1]], text=True)
+                  bad = [m.group(0) for m in re.finditer(r"GLIBC_(\d+)\.(\d+)(?:\.(\d+))?", out)
+                         if tuple(int(x or 0) for x in m.groups()) > (2, 28, 0)]
+                  if bad:
+                      raise SystemExit(f"glibc symbols exceed 2.28 ceiling: {sorted(set(bad))}")
+                  PY
+                          ;;
+                  esac
+            - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+              with:
+                  name: addon-${{ matrix.tag }}
+                  path: zerostack_adapter.${{ matrix.tag }}.node
+                  if-no-files-found: error
+
+    smoke-arm64-gnu:
+        name: Smoke test (linux-arm64-gnu)
+        needs: prebuild-zig
+        runs-on: ubuntu-24.04-arm
+        steps:
+            - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+              with:
+                  name: addon-linux-arm64-gnu
+            - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+              with:
+                  node-version: 24
+            - name: Smoke test addon
+              run: |
+                  node -e "const m = require('./zerostack_adapter.linux-arm64-gnu.node'); if (typeof m.ZsCoordinator?.open !== 'function') throw new Error('missing ZsCoordinator.open');"
+
+    # zig cannot link aarch64 musl (rustc passes --fix-cortex-a53-843419), so this one builds
+    # natively in an Alpine container on an arm64 runner.
+    prebuild-arm64-musl:
+        name: Prebuild (linux-arm64-musl)
+        needs: gate
+        runs-on: ubuntu-24.04-arm
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+            - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+              if: startsWith(github.ref, 'refs/tags/v')
+              with:
+                  node-version: 24
+            - name: Stamp version from tag
+              if: startsWith(github.ref, 'refs/tags/v')
+              run: node scripts/set-version.mjs "${GITHUB_REF_NAME#v}"
+            - name: Build addon
+              run: |
+                  docker run --rm -v "$PWD:/src" -w /src rust:1.99.1-alpine sh -c \
+                      "apk add --no-cache musl-dev binutils && RUSTFLAGS='-C target-feature=-crt-static' sh scripts/build-addon.sh && chown -R $(id -u):$(id -g) target zerostack_adapter.node"
+                  mv zerostack_adapter.node zerostack_adapter.linux-arm64-musl.node
+            - name: Smoke test addon
+              run: |
+                  docker run --rm -v "$PWD:/work" -w /work node:24-alpine \
+                      node -e "const m = require('./zerostack_adapter.linux-arm64-musl.node'); if (typeof m.ZsCoordinator?.open !== 'function') throw new Error('missing ZsCoordinator.open');"
+            - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+              with:
+                  name: addon-linux-arm64-musl
+                  path: zerostack_adapter.linux-arm64-musl.node
+                  if-no-files-found: error
+
+    prebuild-native:
+        name: Prebuild (${{ matrix.tag }})
+        needs: gate
+        runs-on: ${{ matrix.os }}
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - tag: darwin-arm64
+                      os: macos-latest
+                      target: aarch64-apple-darwin
+                    - tag: darwin-x64
+                      os: macos-latest
+                      target: x86_64-apple-darwin
+                    - tag: win32-x64-msvc
+                      os: windows-latest
+                      target: x86_64-pc-windows-msvc
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+            - name: Use Git Bash instead of WSL bash on Windows
+              if: runner.os == 'Windows'
+              shell: powershell
+              run: Add-Content -Path $env:GITHUB_PATH -Value 'C:\Program Files\Git\bin'
+            - name: Rust homes outside the LocalSystem profile
+              if: runner.os == 'Windows'
+              shell: powershell
+              run: |
+                  if (-not [Security.Principal.WindowsIdentity]::GetCurrent().IsSystem) { exit 0 }
+                  if (-not $env:RUNNER_TOOL_CACHE) { throw "RUNNER_TOOL_CACHE is not set" }
+                  $rust = Join-Path $env:RUNNER_TOOL_CACHE "rust"
+                  Add-Content -Path $env:GITHUB_ENV -Value "CARGO_HOME=$rust\cargo"
+                  Add-Content -Path $env:GITHUB_ENV -Value "RUSTUP_HOME=$rust\rustup"
+                  Add-Content -Path $env:GITHUB_PATH -Value "$rust\cargo\bin"
+            - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+              with:
+                  node-version: 24
+            - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+              with:
+                  toolchain: 1.99.1
+                  targets: ${{ matrix.target }}
+            - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+              with:
+                  key: ${{ matrix.tag }}
+            - name: Stamp version from tag
+              if: startsWith(github.ref, 'refs/tags/v')
+              shell: bash
+              run: node scripts/set-version.mjs "${GITHUB_REF_NAME#v}"
+            - name: Build addon
+              shell: bash
+              env:
+                  CARGO_BUILD_TARGET: ${{ matrix.target }}
+              run: |
+                  sh scripts/build-addon.sh
+                  mv zerostack_adapter.node "zerostack_adapter.${{ matrix.tag }}.node"
+            - name: Smoke test native load
+              if: matrix.tag != 'darwin-x64'
+              shell: bash
+              run: |
+                  node -e "const m = require('./zerostack_adapter.${{ matrix.tag }}.node'); if (typeof m.ZsCoordinator?.open !== 'function') throw new Error('missing ZsCoordinator.open');"
+            - name: Verify darwin-x64 Mach-O slice
+              if: matrix.tag == 'darwin-x64'
+              shell: bash
+              run: lipo -archs zerostack_adapter.darwin-x64.node | grep -qw x86_64
+            - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+              with:
+                  name: addon-${{ matrix.tag }}
+                  path: zerostack_adapter.${{ matrix.tag }}.node
+                  if-no-files-found: error
+
+    bundle:
+        name: Release & Publish
+        needs: [prebuild-zig, smoke-arm64-gnu, prebuild-arm64-musl, prebuild-native]
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
+            id-token: write
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+            - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+              with:
+                  node-version: 24
+                  cache: npm
+            - run: npm ci && npm run build:ts
+            - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+              with:
+                  pattern: addon-*
+                  merge-multiple: true
+            - name: Verify prebuilds and end-to-end load
+              run: |
+                  for tag in linux-x64-gnu linux-arm64-gnu linux-x64-musl linux-arm64-musl darwin-arm64 darwin-x64 win32-x64-msvc; do
+                      test -f "zerostack_adapter.${tag}.node" || { echo "missing zerostack_adapter.${tag}.node" >&2; exit 1; }
+                  done
+                  npm run test:node
+            - name: Stamp version from tag
+              if: startsWith(github.ref, 'refs/tags/v')
+              run: |
+                  RELEASE_VERSION="${GITHUB_REF_NAME#v}"
+                  node scripts/set-version.mjs "$RELEASE_VERSION"
+                  echo "RELEASE_VERSION=$RELEASE_VERSION" >> "$GITHUB_ENV"
+                  case "$RELEASE_VERSION" in
+                      *-*)
+                          echo "NPM_DIST_TAG=next" >> "$GITHUB_ENV"
+                          echo "IS_PRERELEASE=true" >> "$GITHUB_ENV"
+                          ;;
+                      *)
+                          echo "NPM_DIST_TAG=latest" >> "$GITHUB_ENV"
+                          echo "IS_PRERELEASE=false" >> "$GITHUB_ENV"
+                          ;;
+                  esac
+            - name: Pack tarball
+              run: |
+                  npm pack
+                  if [ -n "${RELEASE_VERSION:-}" ]; then
+                      test -f "smlight-zerostack-adapter-${RELEASE_VERSION}.tgz"
+                  fi
+            - name: Publish to npm
+              if: startsWith(github.ref, 'refs/tags/v')
+              env:
+                  NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+              run: |
+                  npm_ver=$(npm --version)
+                  python3 - "$npm_ver" <<'PY'
+                  import sys
+                  ver = tuple(int(x) for x in sys.argv[1].split(".")[:3])
+                  if ver < (11, 5, 1):
+                      raise SystemExit(f"npm >= 11.5.1 is required for OIDC Trusted Publishing, got {sys.argv[1]}")
+                  PY
+                  if [ -n "$NPM_TOKEN" ]; then
+                      npm config set "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" --location=user
+                  fi
+                  npm publish "smlight-zerostack-adapter-${RELEASE_VERSION}.tgz" --tag "${NPM_DIST_TAG}" --provenance --access public
+            - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
+              if: startsWith(github.ref, 'refs/tags/v')
+              with:
+                  prerelease: ${{ env.IS_PRERELEASE == 'true' }}
+                  files: |
+                      smlight-zerostack-adapter-${{ env.RELEASE_VERSION }}.tgz
+                      zerostack_adapter.*.node
