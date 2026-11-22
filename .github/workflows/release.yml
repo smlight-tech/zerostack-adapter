@@ -227,6 +227,7 @@ jobs:
         name: Release & Publish
         needs: [prebuild-zig, smoke-arm64-gnu, prebuild-arm64-musl, prebuild-native]
         runs-on: ubuntu-latest
+        environment: npm
         permissions:
             contents: write
             id-token: write
@@ -271,8 +272,6 @@ jobs:
                   fi
             - name: Publish to npm
               if: startsWith(github.ref, 'refs/tags/v')
-              env:
-                  NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
               run: |
                   npm_ver=$(npm --version)
                   python3 - "$npm_ver" <<'PY'
@@ -281,10 +280,7 @@ jobs:
                   if ver < (11, 5, 1):
                       raise SystemExit(f"npm >= 11.5.1 is required for OIDC Trusted Publishing, got {sys.argv[1]}")
                   PY
-                  if [ -n "$NPM_TOKEN" ]; then
-                      npm config set "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" --location=user
-                  fi
-                  npm publish "smlight-zerostack-adapter-${RELEASE_VERSION}.tgz" --tag "${NPM_DIST_TAG}" --provenance --access public
+                  npm publish "smlight-zerostack-adapter-${RELEASE_VERSION}.tgz" --access public --tag "${NPM_DIST_TAG}"
             - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
               if: startsWith(github.ref, 'refs/tags/v')
               with:
