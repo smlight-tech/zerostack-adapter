@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 SMLIGHT
 
-import {mkdtempSync, rmSync, writeFileSync} from "node:fs";
+import {mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {fileURLToPath} from "node:url";
@@ -46,10 +46,30 @@ describe("addon location", () => {
     });
 
     it("formats platform prebuild tags for glibc, musl, macOS and Windows", () => {
-        expect(platformAddonTag("linux", "x64", false)).toBe("linux-x64-gnu");
-        expect(platformAddonTag("linux", "arm64", true)).toBe("linux-arm64-musl");
-        expect(platformAddonTag("darwin", "arm64", false)).toBe("darwin-arm64");
-        expect(platformAddonTag("win32", "x64", false)).toBe("win32-x64-msvc");
+        const expected: readonly [NodeJS.Platform, string, boolean, string][] = [
+            ["linux", "x64", false, "linux-x64-gnu"],
+            ["linux", "arm64", false, "linux-arm64-gnu"],
+            ["linux", "x64", true, "linux-x64-musl"],
+            ["linux", "arm64", true, "linux-arm64-musl"],
+            ["linux", "arm", false, "linux-arm-gnueabihf"],
+            ["linux", "arm", true, "linux-arm-musleabihf"],
+            ["linux", "riscv64", false, "linux-riscv64-gnu"],
+            ["darwin", "arm64", false, "darwin-arm64"],
+            ["darwin", "x64", false, "darwin-x64"],
+            ["win32", "x64", false, "win32-x64-msvc"],
+            ["win32", "arm64", false, "win32-arm64-msvc"],
+        ];
+        for (const [platform, arch, isMusl, tag] of expected) {
+            expect(platformAddonTag(platform, arch, isMusl)).toBe(tag);
+        }
+
+        const pkg: unknown = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+        const scripts = typeof pkg === "object" && pkg !== null && "scripts" in pkg ? pkg.scripts : undefined;
+        const prepack =
+            typeof scripts === "object" && scripts !== null && "prepack" in scripts && typeof scripts.prepack === "string" ? scripts.prepack : "";
+        for (const [, , , tag] of expected) {
+            expect(prepack).toContain(`'${tag}'`);
+        }
     });
 
     it("throws with the path tried when the binary is missing", () => {

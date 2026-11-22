@@ -69,7 +69,21 @@ if [ "$windows" = 1 ]; then
             echo "dumpbin is not on PATH and $vswhere is missing" >&2
             exit 1
         fi
-        found=$("$vswhere" -latest -products '*' -find 'VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe' | tr -d '\r' | tail -n 1)
+        case "${PROCESSOR_ARCHITEW6432:-${PROCESSOR_ARCHITECTURE:-$(uname -m)}}" in
+            ARM64 | arm64 | aarch64)
+                patterns='VC/Tools/MSVC/*/bin/Hostarm64/arm64/dumpbin.exe VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe'
+                ;;
+            *)
+                patterns='VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe'
+                ;;
+        esac
+        found=""
+        for pattern in $patterns; do
+            found=$("$vswhere" -latest -products '*' -find "$pattern" | tr -d '\r' | tail -n 1)
+            if [ -n "$found" ]; then
+                break
+            fi
+        done
         if [ -z "$found" ]; then
             echo "vswhere found no MSVC dumpbin.exe" >&2
             exit 1
