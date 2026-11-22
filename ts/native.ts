@@ -18,6 +18,9 @@ export function platformAddonTag(
     isMusl: boolean = detectMusl(platform),
 ): string {
     if (platform === "linux") {
+        if (arch === "arm") {
+            return `linux-arm-${isMusl ? "musleabihf" : "gnueabihf"}`;
+        }
         return `linux-${arch}-${isMusl ? "musl" : "gnu"}`;
     }
     if (platform === "win32") {
