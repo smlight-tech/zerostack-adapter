@@ -6,10 +6,6 @@ import {createRequire} from "node:module";
 import {fileURLToPath} from "node:url";
 import type {ZsCoordinator} from "../native.js";
 
-export const ADDON_ENV = "ZEROSTACK_ADAPTER_ADDON";
-
-export const PACKAGE_ADDON_PATH = fileURLToPath(new URL("../zerostack_adapter.node", import.meta.url));
-
 export type CoordinatorOpener = Pick<typeof ZsCoordinator, "open">;
 
 export function platformAddonTag(
@@ -49,30 +45,15 @@ function glibcVersion(report: unknown): string | undefined {
     return typeof version === "string" && version !== "" ? version : undefined;
 }
 
-export function addonPath(env: NodeJS.ProcessEnv = process.env, tag: string = platformAddonTag()): string {
-    const override = env[ADDON_ENV];
-
-    if (override !== undefined) {
-        if (override === "") {
-            throw new Error(`[zerostack-adapter] ${ADDON_ENV} is set but empty`);
-        }
-
-        return override;
-    }
-
-    const platformPath = fileURLToPath(new URL(`../zerostack_adapter.${tag}.node`, import.meta.url));
-    if (existsSync(platformPath)) {
-        return platformPath;
-    }
-
-    return PACKAGE_ADDON_PATH;
+export function addonPath(tag: string = platformAddonTag()): string {
+    return fileURLToPath(new URL(`../zerostack_adapter.${tag}.node`, import.meta.url));
 }
 
 export function loadNativeCoordinator(path: string = addonPath()): CoordinatorOpener {
     if (!existsSync(path)) {
         throw new Error(
             `[zerostack-adapter] native addon not found at '${path}' ` +
-                `(set ${ADDON_ENV}, or install zerostack_adapter.${platformAddonTag()}.node or zerostack_adapter.node next to package.json)`,
+                `(expected zerostack_adapter.${platformAddonTag()}.node next to package.json)`,
         );
     }
 

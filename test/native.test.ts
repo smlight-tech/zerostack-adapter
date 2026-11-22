@@ -6,7 +6,7 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {fileURLToPath} from "node:url";
 import {afterEach, beforeEach, describe, expect, it} from "vitest";
-import {ADDON_ENV, addonPath, loadNativeCoordinator, PACKAGE_ADDON_PATH, platformAddonTag} from "../ts/native.js";
+import {addonPath, loadNativeCoordinator, platformAddonTag} from "../ts/native.js";
 
 const COMPLETE_METHODS = [
     "start",
@@ -38,11 +38,10 @@ afterEach(() => {
 });
 
 describe("addon location", () => {
-    it("uses the package-local binary unless the environment names one", () => {
-        expect(PACKAGE_ADDON_PATH).toBe(fileURLToPath(new URL("../zerostack_adapter.node", import.meta.url)));
-        expect(addonPath({}, "nonexistent-platform")).toBe(PACKAGE_ADDON_PATH);
-        expect(addonPath({[ADDON_ENV]: "/opt/zerostack-adapter/zerostack_adapter.node"})).toBe("/opt/zerostack-adapter/zerostack_adapter.node");
-        expect(() => addonPath({[ADDON_ENV]: ""})).toThrow(`${ADDON_ENV} is set but empty`);
+    it("resolves strictly to the platform-tagged binary", () => {
+        expect(addonPath("linux-x64-gnu")).toBe(fileURLToPath(new URL("../zerostack_adapter.linux-x64-gnu.node", import.meta.url)));
+        expect(addonPath("nonexistent-platform")).toBe(fileURLToPath(new URL("../zerostack_adapter.nonexistent-platform.node", import.meta.url)));
+        expect(addonPath()).toBe(fileURLToPath(new URL(`../zerostack_adapter.${platformAddonTag()}.node`, import.meta.url)));
     });
 
     it("formats platform prebuild tags for glibc, musl, macOS and Windows", () => {
@@ -73,9 +72,11 @@ describe("addon location", () => {
     });
 
     it("throws with the path tried when the binary is missing", () => {
-        const missing = join(tempDir, "zerostack_adapter.node");
+        const missing = join(tempDir, "zerostack_adapter.linux-x64-gnu.node");
+        const missingPlatform = addonPath("nonexistent-platform");
 
         expect(() => loadNativeCoordinator(missing)).toThrow(`native addon not found at '${missing}'`);
+        expect(() => loadNativeCoordinator(missingPlatform)).toThrow(`native addon not found at '${missingPlatform}'`);
     });
 
     it("rejects a ZsCoordinator missing an instance method", () => {

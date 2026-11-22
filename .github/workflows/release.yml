@@ -101,7 +101,7 @@ jobs:
                   CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER: riscv64-linux-gnu-gcc
               run: |
                   sh scripts/build-addon.sh
-                  mv zerostack_adapter.node "zerostack_adapter.${{ matrix.tag }}.node"
+                  test -f "zerostack_adapter.${{ matrix.tag }}.node"
             - name: Smoke test addon
               run: |
                   addon="zerostack_adapter.${{ matrix.tag }}.node"
@@ -193,8 +193,8 @@ jobs:
             - name: Build addon
               run: |
                   docker run --rm -v "$PWD:/src" -w /src rust:1.99.1-alpine sh -c \
-                      "apk add --no-cache musl-dev binutils && RUSTFLAGS='-C target-feature=-crt-static' sh scripts/build-addon.sh && chown -R $(id -u):$(id -g) target zerostack_adapter.node"
-                  mv zerostack_adapter.node zerostack_adapter.linux-arm64-musl.node
+                      "apk add --no-cache musl-dev binutils && RUSTFLAGS='-C target-feature=-crt-static' sh scripts/build-addon.sh && chown -R $(id -u):$(id -g) target zerostack_adapter.linux-arm64-musl.node"
+                  test -f zerostack_adapter.linux-arm64-musl.node
             - name: Smoke test addon
               run: |
                   docker run --rm -v "$PWD:/work" -w /work node:24-alpine \
@@ -261,7 +261,7 @@ jobs:
                   CARGO_BUILD_TARGET: ${{ matrix.target }}
               run: |
                   sh scripts/build-addon.sh
-                  mv zerostack_adapter.node "zerostack_adapter.${{ matrix.tag }}.node"
+                  test -f "zerostack_adapter.${{ matrix.tag }}.node"
             - name: Smoke test native load
               if: matrix.tag != 'darwin-x64'
               shell: bash
