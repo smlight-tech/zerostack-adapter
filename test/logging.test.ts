@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 SMLIGHT
 
-import {afterEach, describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 import {setLogger} from "zigbee-herdsman";
 import loggerModule from "zigbee-herdsman/dist/utils/logger.js";
 import type {NativeLogLevel, NativeLogRecord} from "../native.js";
@@ -204,5 +204,176 @@ describe("installNativeLogger", () => {
             },
         );
         expect(seen).toStrictEqual(["zh:zerostack:hello"]);
+    });
+
+    it("isolates throwing host loggers and emits one process warning without throwing", () => {
+        const warningSpy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+        let registered: ((record: NativeLogRecord) => void) | null = null;
+        try {
+            setLogger({
+                debug: () => {
+                    throw new Error("HOST_LOGGER_EXPLODED");
+                },
+                info: () => {},
+                warning: () => {},
+                error: () => {},
+            });
+            installNativeLogger({
+                setLogHandler: (cb) => {
+                    registered = cb;
+                },
+                setLogLevel: () => {},
+            });
+
+            const sample: NativeLogRecord = {level: "debug", namespace: "zh:zerostack:mt", message: "frame"};
+            expect(() => registered?.(sample)).not.toThrow();
+            expect(() => registered?.(sample)).not.toThrow();
+            expect(warningSpy).toHaveBeenCalledTimes(1);
+            expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining("HOST_LOGGER_EXPLODED"), {
+                code: "ZEROSTACK_LOGGER_ERROR",
+            });
+        } finally {
+            warningSpy.mockRestore();
+        }
+    });
+
+    it("preserves the existing handler registration across repeated installs sharing setLogHandler", () => {
+        let attachCalls = 0;
+        let detachCalls = 0;
+        const levels: NativeLogLevel[] = [];
+        const sharedSetLogHandler = (cb: ((record: NativeLogRecord) => void) | null): void => {
+            if (cb === null) {
+                detachCalls++;
+            } else {
+                attachCalls++;
+            }
+        };
+        const wrapperA = {setLogHandler: sharedSetLogHandler, setLogLevel: (l: NativeLogLevel) => levels.push(l)};
+        const wrapperB = {setLogHandler: sharedSetLogHandler, setLogLevel: (l: NativeLogLevel) => levels.push(l)};
+
+        installNativeLogger(wrapperA);
+        installNativeLogger(wrapperA);
+        installNativeLogger(wrapperB);
+
+        expect(detachCalls).toBe(0);
+        expect(attachCalls).toBe(1);
+        expect(levels).toStrictEqual(["info", "info", "info"]);
+    });
+
+    it("skips non-configurable own setLevel descriptors without throwing TypeError", () => {
+        let level = "info";
+        const hostLogger: ConfigurableLogger = {
+            debug: () => {},
+            info: () => {},
+            warning: () => {},
+            error: () => {},
+            getLevel: () => level,
+        };
+        Object.defineProperty(hostLogger, "setLevel", {
+            value: (next: string) => {
+                level = next;
+            },
+            configurable: false,
+            writable: true,
+            enumerable: true,
+        });
+        setLogger(hostLogger);
+
+        expect(() =>
+            installNativeLogger({
+                setLogHandler: () => {},
+                setLogLevel: () => {},
+            }),
+        ).not.toThrow();
+        expect(() => uninstallNativeLogger()).not.toThrow();
+    });
+
+    it("restores an accessor descriptor on loggerModule.logger cleanly on uninstall", () => {
+        const saved = Object.getOwnPropertyDescriptor(loggerModule, "logger");
+        let backing = INITIAL_LOGGER;
+        const getter = vi.fn(() => backing);
+        const setter = vi.fn((next) => {
+            backing = next;
+        });
+
+        try {
+            Object.defineProperty(loggerModule, "logger", {
+                configurable: true,
+                enumerable: true,
+                get: getter,
+                set: setter,
+            });
+            installNativeLogger({
+                setLogHandler: () => {},
+                setLogLevel: () => {},
+            });
+
+            const replacement: ConfigurableLogger = {
+                debug: () => {},
+                info: () => {},
+                warning: () => {},
+                error: () => {},
+                getLevel: () => "debug",
+            };
+            setLogger(replacement);
+            uninstallNativeLogger();
+
+            const restored = Object.getOwnPropertyDescriptor(loggerModule, "logger");
+            expect(restored?.get).toBe(getter);
+            expect(restored?.set).toBe(setter);
+            expect(backing).toBe(replacement);
+            expect(setter).toHaveBeenCalledWith(replacement);
+        } finally {
+            if (saved !== undefined) {
+                Object.defineProperty(loggerModule, "logger", saved);
+            }
+        }
+    });
+
+    it("quiesces stale queued callbacks after uninstall or handler replacement", () => {
+        const delivered: string[] = [];
+        setLogger({
+            debug: () => {},
+            info: (m, ns) => delivered.push(`${ns}:${typeof m === "function" ? m() : m}`),
+            warning: () => {},
+            error: () => {},
+        });
+
+        const callbacks1: ((record: NativeLogRecord) => void)[] = [];
+        const callbacks2: ((record: NativeLogRecord) => void)[] = [];
+        installNativeLogger({
+            setLogHandler: (cb) => {
+                if (cb !== null) {
+                    callbacks1.push(cb);
+                }
+            },
+            setLogLevel: () => {},
+        });
+        uninstallNativeLogger();
+        expect(callbacks1).toHaveLength(1);
+        callbacks1[0]?.({level: "info", namespace: "zh:zerostack", message: "stale-after-uninstall"});
+        expect(delivered).toStrictEqual([]);
+
+        installNativeLogger({
+            setLogHandler: (cb) => {
+                if (cb !== null) {
+                    callbacks1.push(cb);
+                }
+            },
+            setLogLevel: () => {},
+        });
+        installNativeLogger({
+            setLogHandler: (cb) => {
+                if (cb !== null) {
+                    callbacks2.push(cb);
+                }
+            },
+            setLogLevel: () => {},
+        });
+        expect(callbacks1).toHaveLength(2);
+        expect(callbacks2).toHaveLength(1);
+        callbacks1[1]?.({level: "info", namespace: "zh:zerostack", message: "stale-after-replace"});
+        callbacks2[0]?.({level: "info", namespace: "zh:zerostack", message: "active-handler"});
+        expect(delivered).toStrictEqual(["zh:zerostack:active-handler"]);
     });
 });

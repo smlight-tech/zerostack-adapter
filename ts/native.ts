@@ -86,6 +86,11 @@ export function loadNativeAddon(path: string = addonPath()): NativeAddon {
         throw new Error(`[zerostack-adapter] native addon '${path}' does not export setLogHandler() and setLogLevel()`);
     }
 
+    const cached = ADDON_BY_OPENER.get(coordinator);
+    if (cached !== undefined) {
+        return cached;
+    }
+
     const addon: NativeAddon = {
         ZsCoordinator: coordinator,
         setLogHandler: logHandlerFn,

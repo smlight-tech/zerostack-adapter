@@ -181,6 +181,8 @@ const wrappedLoggers = new Map<object, Map<"setLevel" | "setNamespacedLevels", W
 let activeAddon: LogAddon | undefined;
 let originalLoggerProperty: PropertyDescriptor | undefined;
 let loggerPropertyHooked = false;
+let handlerGen = 0;
+let logCallbackErrorReported = false;
 
 function restoreLoggerMethods(target: object, methods: Map<"setLevel" | "setNamespacedLevels", WrappedMethodState>): void {
     for (const [name, state] of methods) {
@@ -216,7 +218,7 @@ function attachLoggerMethods(logger: unknown): void {
         }
         const hadOwn = Object.hasOwn(logger, name);
         const originalDescriptor = hadOwn ? Object.getOwnPropertyDescriptor(logger, name) : undefined;
-        if (originalDescriptor !== undefined && !originalDescriptor.configurable && !originalDescriptor.writable) {
+        if (originalDescriptor !== undefined && !originalDescriptor.configurable) {
             continue;
         }
         if (!hadOwn && !Object.isExtensible(logger)) {
@@ -269,10 +271,15 @@ function restoreLoggerSetterHook(): void {
     }
     const current = loggerModule.logger;
     if (originalLoggerProperty !== undefined) {
-        Object.defineProperty(loggerModule, "logger", {
-            ...originalLoggerProperty,
-            value: current,
-        });
+        if ("get" in originalLoggerProperty || "set" in originalLoggerProperty) {
+            Object.defineProperty(loggerModule, "logger", originalLoggerProperty);
+            originalLoggerProperty.set?.call(loggerModule, current);
+        } else {
+            Object.defineProperty(loggerModule, "logger", {
+                ...originalLoggerProperty,
+                value: current,
+            });
+        }
     }
     originalLoggerProperty = undefined;
     loggerPropertyHooked = false;
@@ -288,17 +295,41 @@ export function syncNativeLogLevel(): NativeLogLevel | undefined {
 }
 
 export function installNativeLogger(addon: LogAddon): void {
-    if (activeAddon !== undefined && activeAddon !== addon) {
+    const sameHandler = activeAddon !== undefined && activeAddon.setLogHandler === addon.setLogHandler;
+    if (activeAddon !== undefined && !sameHandler) {
+        handlerGen++;
         activeAddon.setLogHandler(null);
     }
     activeAddon = addon;
     ensureLoggerSetterHook();
     attachLoggerMethods(loggerModule.logger);
     syncNativeLogLevel();
-    addon.setLogHandler((record) => dispatchNativeLog(record));
+    if (sameHandler) {
+        return;
+    }
+    const gen = ++handlerGen;
+    logCallbackErrorReported = false;
+    addon.setLogHandler((record) => {
+        if (gen !== handlerGen) {
+            return;
+        }
+        try {
+            dispatchNativeLog(record);
+        } catch (error) {
+            if (!logCallbackErrorReported) {
+                logCallbackErrorReported = true;
+                const detail = error instanceof Error ? error.message : String(error);
+                process.emitWarning(`Host logger threw while handling ${record.namespace} log: ${detail}`, {
+                    code: "ZEROSTACK_LOGGER_ERROR",
+                });
+            }
+        }
+    });
 }
 
 export function uninstallNativeLogger(): void {
+    handlerGen++;
+    logCallbackErrorReported = false;
     if (activeAddon !== undefined) {
         activeAddon.setLogHandler(null);
         activeAddon.setLogLevel("info");

@@ -36,11 +36,14 @@ pub const fn is_sensitive_osal_nv(id: u16) -> bool {
             | 0x003B
             | 0x004C
             | 0x0062
+            | 0x0068
             | 0x0069
             | 0x006A
             | 0x006F
             | 0x0070
-            | 0x0075..=0x007F
+            | 0x0072
+            | 0x0073
+            | 0x0075..=0x0080
             | 0x0082
             | 0x00C2
             | 0x00C3
@@ -831,7 +834,10 @@ mod tests {
 
     #[test]
     fn redacts_all_sensitive_nv_backup_and_install_code_payloads_at_source() {
-        for nv_id in [0x003Au16, 0x003B, 0x0062, 0x0082, 0x0101, 0x0201] {
+        for nv_id in [
+            0x003Au16, 0x003B, 0x0062, 0x0068, 0x0072, 0x0073, 0x0075, 0x0080, 0x0082, 0x0101,
+            0x0201,
+        ] {
             let [lo, hi] = nv_id.to_le_bytes();
             let mut osal_write = vec![lo, hi, 0, 16];
             osal_write.extend_from_slice(&SECRET);

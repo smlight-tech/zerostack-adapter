@@ -116,9 +116,11 @@ describe("addon location", () => {
 
         const opener = loadNativeCoordinator(fakeAddon);
         const addon = loadNativeAddon(fakeAddon);
+        const addonAgain = loadNativeAddon(fakeAddon);
 
         expect(opener.open).toBeTypeOf("function");
         expect(addon.setLogHandler).toBeTypeOf("function");
         expect(addon.setLogLevel).toBeTypeOf("function");
+        expect(addonAgain).toBe(addon);
     });
 });

@@ -757,10 +757,12 @@ impl<P: Port> Engine<P> {
             )));
         };
         if crate::logging::enabled(crate::logging::LogLevel::Debug) {
+            let redacted = (frame.cmd0 == ((p.cmd0 & 0x1F) | SRSP) && frame.cmd1 == p.cmd1)
+                .then_some(p.redacted_read);
             crate::logging::emit(
                 crate::logging::LogLevel::Debug,
                 crate::logging::NS_MT,
-                crate::mt_trace::format_srsp(&frame, Some(p.redacted_read)),
+                crate::mt_trace::format_srsp(&frame, redacted),
             );
         }
         self.used -= p.wire;
@@ -1702,5 +1704,43 @@ mod tests {
             drained.await.expect("drain task"),
             "transport: indication overflow"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn mismatched_nv_read_srsp_fails_closed_redacted() {
+        let (_guard, captured) = crate::logging::tests::TestLogGuard::install(
+            crate::logging::LogLevel::Debug,
+            "osalNvReadExt",
+        );
+        let (link, _inbound, mut peer, _) = opened().await;
+        // Send a non-sensitive SREQ (`SYS_GET_EXTADDR`), so `redacted_read` is `false`.
+        let (r, ()) = tokio::join!(link.sreq(0x21, 0x04, vec![], soon()), async {
+            let (seq, _) = peer.expect(0x21, 0x04).await;
+            // Reply with a mismatched `SYS_OSAL_NV_READ_EXT` (`0x61 0x1C`) carrying secret bytes.
+            peer.send(
+                seq,
+                Frame::new(0x61, 0x1C, vec![0, 4, 0xC1, 0x99, 0xE7, 0x5A]),
+            )
+            .await;
+        });
+        assert!(matches!(r, Err(ZsError::Transport(m)) if m.contains("answers SREQ 0x21 0x04")));
+
+        let entries = captured.lock().unwrap();
+        let line = entries
+            .iter()
+            .find(|e| e.message.contains("osalNvReadExt"))
+            .expect("expected mismatched SRSP trace");
+        assert_eq!(
+            line.message,
+            "<-- SRSP: SYS - osalNvReadExt - {\"status\":0,\"len\":4,\"value\":\"[REDACTED]\"}"
+        );
+        let lower = line.message.to_ascii_lowercase();
+        for needle in ["c1", "99", "e7", "5a"] {
+            assert!(
+                !lower.contains(needle),
+                "leaked {needle} in: {}",
+                line.message
+            );
+        }
     }
 }

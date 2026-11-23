@@ -13,9 +13,10 @@ import {after, before, test} from "node:test";
 import {fileURLToPath} from "node:url";
 import {Controller, setLogger} from "zigbee-herdsman";
 import loggerModule from "zigbee-herdsman/dist/utils/logger.js";
-import {loadNativeCoordinator, uninstallNativeLogger} from "../dist/index.js";
+import {installNativeLogger, loadNativeAddon, loadNativeCoordinator, uninstallNativeLogger} from "../dist/index.js";
 import {register} from "../dist/register.js";
 import {ROUTER, startZsCoordinator} from "./zsCoordinator.mjs";
+import {startZsPeer} from "./zsPeer.mjs";
 
 const VERSION = {transportRev: 2, product: 1, major: 0, minor: 9, maint: 11, revision: 20261117};
 const FACTORY_IEEE = 0x00124b00f00d0001n;
@@ -308,4 +309,52 @@ test("leaves the Node event loop free to exit even when setLogHandler remains in
         timeout: 5000,
         stdio: "pipe",
     });
+});
+
+test("isolates an exploding host logger over the real N-API addon without crashing Node", async () => {
+    const addon = loadNativeAddon();
+    const warnings = [];
+    const uncaught = [];
+    const onWarning = (warning) => warnings.push(warning);
+    const onUncaught = (error) => uncaught.push(error);
+    process.on("warning", onWarning);
+    process.on("uncaughtException", onUncaught);
+
+    const peerVersion = {transportRev: 2, product: 1, major: 2, minor: 7, maint: 1, revision: 20261116};
+    const peer = await startZsPeer(peerVersion);
+    setLogger({
+        debug: () => {
+            throw new Error("HOST_LOGGER_EXPLODED");
+        },
+        info: () => {},
+        warning: () => {},
+        error: () => {},
+        getLevel: () => "debug",
+    });
+    installNativeLogger(addon);
+
+    let coordinator;
+    try {
+        coordinator = await addon.ZsCoordinator.open({backend: "zs", transport: peer.transport, baudRate: 115200, rtscts: false}, () => {}, 5000);
+        const version = await coordinator.coordinatorVersion(5000);
+        assert.equal(version.meta.revision, peerVersion.revision);
+        await coordinator.stop();
+        coordinator = undefined;
+        await flushLoop();
+    } finally {
+        if (coordinator !== undefined) {
+            await coordinator.stop();
+        }
+        await peer.close();
+        uninstallNativeLogger();
+        setLogger(INITIAL_LOGGER);
+        process.off("warning", onWarning);
+        process.off("uncaughtException", onUncaught);
+    }
+
+    assert.deepEqual(uncaught, []);
+    assert.deepEqual(peer.errors, []);
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0]?.code, "ZEROSTACK_LOGGER_ERROR");
+    assert.match(warnings[0]?.message ?? "", /HOST_LOGGER_EXPLODED/);
 });

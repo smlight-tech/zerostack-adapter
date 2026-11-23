@@ -322,18 +322,21 @@ impl Visit for MessageVisitor {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::Mutex;
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-    struct TestLogGuard {
+    pub(crate) struct TestLogGuard {
         _lock: std::sync::MutexGuard<'static, ()>,
     }
 
     impl TestLogGuard {
-        fn install(level: LogLevel, tag: &'static str) -> (Self, Arc<Mutex<Vec<LogEntry>>>) {
+        pub(crate) fn install(
+            level: LogLevel,
+            tag: &'static str,
+        ) -> (Self, Arc<Mutex<Vec<LogEntry>>>) {
             let lock = TEST_LOCK
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
