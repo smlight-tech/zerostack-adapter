@@ -11,7 +11,7 @@ npm install @smlight/zerostack-adapter
 ```
 
 - **Node.js:** `^22.2.0 || ^24 || <=26.2`
-- **Prebuilt binaries:** `linux-x64-gnu`, `linux-arm64-gnu`, `linux-x64-musl`, `linux-arm64-musl`, `linux-arm-gnueabihf`, `linux-arm-musleabihf`, `linux-riscv64-gnu`, `darwin-arm64`, `darwin-x64`, `win32-x64-msvc`, `win32-arm64-msvc` (override with `$ZEROSTACK_ADAPTER_ADDON`).
+- **Prebuilt binaries:** `linux-x64-gnu`, `linux-arm64-gnu`, `linux-x64-musl`, `linux-arm64-musl`, `linux-arm-gnueabihf`, `linux-arm-musleabihf`, `linux-riscv64-gnu`, `darwin-arm64`, `darwin-x64`, `win32-x64-msvc`, `win32-arm64-msvc`.
 
 ## Usage
 

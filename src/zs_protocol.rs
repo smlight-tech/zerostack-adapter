@@ -635,7 +635,9 @@ impl Coordinator {
                 }
                 _ => {
                     return Err(ZsError::Rejected(format!(
-                        "NV item 0x{item:04x} read failed: {d:02x?}"
+                        "NV item 0x{item:04x} read failed (status={:?}, len={})",
+                        d.first(),
+                        d.len()
                     )));
                 }
             }
@@ -2095,5 +2097,31 @@ pub(crate) mod tests {
         let (r, ()) = tokio::join!(c.start_network(&net, soon()), script);
         assert!(matches!(r, Err(ZsError::Rejected(m)) if m.contains("endpoint 1 kept")));
         assert!(!c.registered.load(Ordering::Acquire));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn nv_read_malformed_sensitive_response_redacts_bytes_from_error() {
+        let (c, _events, mut peer) = session().await;
+        let script = async {
+            peer.answer(SYS, 0x13, &[4, 0]).await;
+            let _ = peer
+                .answer(SYS, 0x1C, &[0, 10, 0xC1, 0x99, 0xE7, 0x5A])
+                .await;
+        };
+        let (r, ()) = tokio::join!(c.nv_read(0x003A, soon()), script);
+        let msg = match r {
+            Err(ZsError::Rejected(m)) => m,
+            other => panic!("expected rejected error, got {other:?}"),
+        };
+        assert!(msg.contains("read failed"), "{msg}");
+        assert!(msg.contains("status=Some(0)"), "{msg}");
+        assert!(msg.contains("len=6"), "{msg}");
+        let lower = msg.to_ascii_lowercase();
+        for needle in ["c1", "99", "e7", "5a"] {
+            assert!(
+                !lower.contains(needle),
+                "leaked payload byte {needle} in: {msg}"
+            );
+        }
     }
 }

@@ -360,6 +360,7 @@ struct InFlight {
     kind: Kind,
     cmd0: u8,
     cmd1: u8,
+    redacted_read: bool,
     wire: usize,
     bound: Instant,
     reply: Reply<Response>,
@@ -427,9 +428,15 @@ impl<P: Port> Engine<P> {
             tracing::warn!("discarding unsent output failed: {e}");
         }
         match outcome {
-            Ok(Exit::Closed(ack)) => drop(ack.send(())),
+            Ok(Exit::Closed(ack)) => {
+                tracing::debug!(target: "zh:zerostack:transport", "link closed");
+                let _ = ack.send(());
+            }
             Ok(Exit::Dropped) => {}
-            Err(_) => drop(self.inbound.send(Inbound::Down(reason)).await),
+            Err(_) => {
+                tracing::debug!(target: "zh:zerostack:transport", "link ended: {reason}");
+                drop(self.inbound.send(Inbound::Down(reason)).await);
+            }
         }
     }
 
@@ -551,6 +558,7 @@ impl<P: Port> Engine<P> {
         } else {
             0
         };
+        let redacted_read = crate::mt_trace::request_reads_sensitive(&r.frame);
         let wire = self.write(seq, &r.frame).await?;
         let bound = if r.kind == Kind::Startup {
             STARTUP_BOUND
@@ -563,6 +571,7 @@ impl<P: Port> Engine<P> {
             kind: r.kind,
             cmd0: r.frame.cmd0,
             cmd1: r.frame.cmd1,
+            redacted_read,
             wire,
             bound: Instant::now() + bound,
             reply: r.reply,
@@ -581,6 +590,13 @@ impl<P: Port> Engine<P> {
                 out
             }
         };
+        if crate::logging::enabled(crate::logging::LogLevel::Debug) {
+            crate::logging::emit(
+                crate::logging::LogLevel::Debug,
+                crate::logging::NS_MT,
+                crate::mt_trace::format_tx(frame),
+            );
+        }
         self.port
             .write_all(&bytes)
             .await
@@ -704,6 +720,13 @@ impl<P: Port> Engine<P> {
         if frame.cmd0 & TYPE_MASK == SRSP {
             return self.on_srsp(seq, frame);
         }
+        if crate::logging::enabled(crate::logging::LogLevel::Debug) {
+            crate::logging::emit(
+                crate::logging::LogLevel::Debug,
+                crate::logging::NS_MT,
+                crate::mt_trace::format_areq(&frame),
+            );
+        }
         if (frame.cmd0, frame.cmd1) == (AREQ | 0x01, 0x80) {
             return self.on_reset_ind(frame.data);
         }
@@ -721,11 +744,27 @@ impl<P: Port> Engine<P> {
             None => (!self.inflight.is_empty()).then_some(0),
         };
         let Some(p) = at.and_then(|i| self.inflight.remove(i)) else {
+            if crate::logging::enabled(crate::logging::LogLevel::Debug) {
+                crate::logging::emit(
+                    crate::logging::LogLevel::Debug,
+                    crate::logging::NS_MT,
+                    crate::mt_trace::format_srsp(&frame, None),
+                );
+            }
             return Err(ZsError::Transport(format!(
                 "SRSP 0x{:02x} 0x{:02x} answers no request in flight",
                 frame.cmd0, frame.cmd1
             )));
         };
+        if crate::logging::enabled(crate::logging::LogLevel::Debug) {
+            let redacted = (frame.cmd0 == ((p.cmd0 & 0x1F) | SRSP) && frame.cmd1 == p.cmd1)
+                .then_some(p.redacted_read);
+            crate::logging::emit(
+                crate::logging::LogLevel::Debug,
+                crate::logging::NS_MT,
+                crate::mt_trace::format_srsp(&frame, redacted),
+            );
+        }
         self.used -= p.wire;
         self.seen_srsp = true;
         if (frame.cmd0, frame.cmd1) == (SRSP, 0x00) {
@@ -755,6 +794,13 @@ impl<P: Port> Engine<P> {
             self.cobs = CobsRx::default();
             self.shadow = Shadow::default();
             self.budget = usize::from(u16::from_le_bytes([d[3], d[4]])).max(1);
+            tracing::info!(
+                target: "zh:zerostack:transport",
+                "COBS-Mux negotiated (have=0x{:02x}, rx_budget={}, nodes={})",
+                d[2],
+                self.budget,
+                u16::from_le_bytes([d[5], d[6]]),
+            );
         }
         answer(
             p.reply,
@@ -771,6 +817,10 @@ impl<P: Port> Engine<P> {
         self.cobs = CobsRx::default();
         self.shadow = Shadow::default();
         self.budget = DEFAULT_BUDGET;
+        tracing::debug!(
+            target: "zh:zerostack:transport",
+            "link returned to legacy framing after SYS_RESET_IND"
+        );
         if let Some(waiter) = self.reset_wait.take() {
             answer(waiter, Ok(data));
             Ok(())
@@ -1654,5 +1704,43 @@ mod tests {
             drained.await.expect("drain task"),
             "transport: indication overflow"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn mismatched_nv_read_srsp_fails_closed_redacted() {
+        let (_guard, captured) = crate::logging::tests::TestLogGuard::install(
+            crate::logging::LogLevel::Debug,
+            "osalNvReadExt",
+        );
+        let (link, _inbound, mut peer, _) = opened().await;
+        // Send a non-sensitive SREQ (`SYS_GET_EXTADDR`), so `redacted_read` is `false`.
+        let (r, ()) = tokio::join!(link.sreq(0x21, 0x04, vec![], soon()), async {
+            let (seq, _) = peer.expect(0x21, 0x04).await;
+            // Reply with a mismatched `SYS_OSAL_NV_READ_EXT` (`0x61 0x1C`) carrying secret bytes.
+            peer.send(
+                seq,
+                Frame::new(0x61, 0x1C, vec![0, 4, 0xC1, 0x99, 0xE7, 0x5A]),
+            )
+            .await;
+        });
+        assert!(matches!(r, Err(ZsError::Transport(m)) if m.contains("answers SREQ 0x21 0x04")));
+
+        let entries = captured.lock().unwrap();
+        let line = entries
+            .iter()
+            .find(|e| e.message.contains("osalNvReadExt"))
+            .expect("expected mismatched SRSP trace");
+        assert_eq!(
+            line.message,
+            "<-- SRSP: SYS - osalNvReadExt - {\"status\":0,\"len\":4,\"value\":\"[REDACTED]\"}"
+        );
+        let lower = line.message.to_ascii_lowercase();
+        for needle in ["c1", "99", "e7", "5a"] {
+            assert!(
+                !lower.contains(needle),
+                "leaked {needle} in: {}",
+                line.message
+            );
+        }
     }
 }
