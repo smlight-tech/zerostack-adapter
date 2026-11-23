@@ -6,7 +6,7 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {fileURLToPath} from "node:url";
 import {afterEach, beforeEach, describe, expect, it} from "vitest";
-import {addonPath, loadNativeCoordinator, platformAddonTag} from "../ts/native.js";
+import {addonPath, loadNativeAddon, loadNativeCoordinator, platformAddonTag} from "../ts/native.js";
 
 const COMPLETE_METHODS = [
     "start",
@@ -82,7 +82,10 @@ describe("addon location", () => {
     it("rejects a ZsCoordinator missing an instance method", () => {
         const fakeAddon = join(tempDir, "partial_addon.cjs");
         const methods = COMPLETE_METHODS.filter((method) => method !== "zdo");
-        writeFileSync(fakeAddon, `module.exports = {ZsCoordinator: class { static open() {} ${methods.map((m) => `${m}() {}`).join(" ")} }};\n`);
+        writeFileSync(
+            fakeAddon,
+            `module.exports = {setLogHandler() {}, setLogLevel() {}, ZsCoordinator: class { static open() {} ${methods.map((m) => `${m}() {}`).join(" ")} }};\n`,
+        );
 
         expect(() => loadNativeCoordinator(fakeAddon)).toThrow("without a static open() and the methods");
     });
@@ -94,15 +97,28 @@ describe("addon location", () => {
         expect(() => loadNativeCoordinator(fakeAddon)).toThrow("without a static open()");
     });
 
-    it("returns the exported coordinator class", () => {
+    it("rejects an addon missing setLogHandler or setLogLevel", () => {
+        const fakeAddon = join(tempDir, "no_logging_addon.cjs");
+        writeFileSync(
+            fakeAddon,
+            `module.exports = {ZsCoordinator: class { static open() {} ${COMPLETE_METHODS.map((m) => `${m}() {}`).join(" ")} }};\n`,
+        );
+
+        expect(() => loadNativeAddon(fakeAddon)).toThrow("does not export setLogHandler() and setLogLevel()");
+    });
+
+    it("returns the exported coordinator class and logging hooks", () => {
         const fakeAddon = join(tempDir, "addon.cjs");
         writeFileSync(
             fakeAddon,
-            `module.exports = {ZsCoordinator: class { static open() { return Promise.reject(new Error("fake")); } ${COMPLETE_METHODS.map((m) => `${m}() {}`).join(" ")} }};\n`,
+            `module.exports = {setLogHandler() {}, setLogLevel() {}, ZsCoordinator: class { static open() { return Promise.reject(new Error("fake")); } ${COMPLETE_METHODS.map((m) => `${m}() {}`).join(" ")} }};\n`,
         );
 
         const opener = loadNativeCoordinator(fakeAddon);
+        const addon = loadNativeAddon(fakeAddon);
 
         expect(opener.open).toBeTypeOf("function");
+        expect(addon.setLogHandler).toBeTypeOf("function");
+        expect(addon.setLogLevel).toBeTypeOf("function");
     });
 });

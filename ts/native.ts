@@ -4,9 +4,17 @@
 import {existsSync} from "node:fs";
 import {createRequire} from "node:module";
 import {fileURLToPath} from "node:url";
-import type {ZsCoordinator} from "../native.js";
+import type {setLogHandler, setLogLevel, ZsCoordinator} from "../native.js";
 
 export type CoordinatorOpener = Pick<typeof ZsCoordinator, "open">;
+
+export interface NativeAddon {
+    readonly ZsCoordinator: typeof ZsCoordinator;
+    readonly setLogHandler: typeof setLogHandler;
+    readonly setLogLevel: typeof setLogLevel;
+}
+
+const ADDON_BY_OPENER = new WeakMap<CoordinatorOpener, NativeAddon>();
 
 export function platformAddonTag(
     platform: NodeJS.Platform = process.platform,
@@ -49,7 +57,7 @@ export function addonPath(tag: string = platformAddonTag()): string {
     return fileURLToPath(new URL(`../zerostack_adapter.${tag}.node`, import.meta.url));
 }
 
-export function loadNativeCoordinator(path: string = addonPath()): CoordinatorOpener {
+export function loadNativeAddon(path: string = addonPath()): NativeAddon {
     if (!existsSync(path)) {
         throw new Error(
             `[zerostack-adapter] native addon not found at '${path}' ` +
@@ -71,7 +79,29 @@ export function loadNativeCoordinator(path: string = addonPath()): CoordinatorOp
         );
     }
 
-    return coordinator;
+    const logHandlerFn: unknown = Reflect.get(loaded, "setLogHandler");
+    const logLevelFn: unknown = Reflect.get(loaded, "setLogLevel");
+
+    if (!isSetLogHandler(logHandlerFn) || !isSetLogLevel(logLevelFn)) {
+        throw new Error(`[zerostack-adapter] native addon '${path}' does not export setLogHandler() and setLogLevel()`);
+    }
+
+    const addon: NativeAddon = {
+        ZsCoordinator: coordinator,
+        setLogHandler: logHandlerFn,
+        setLogLevel: logLevelFn,
+    };
+    ADDON_BY_OPENER.set(coordinator, addon);
+
+    return addon;
+}
+
+export function loadNativeCoordinator(path: string = addonPath()): CoordinatorOpener {
+    return loadNativeAddon(path).ZsCoordinator;
+}
+
+export function addonForOpener(opener: CoordinatorOpener): NativeAddon | undefined {
+    return ADDON_BY_OPENER.get(opener);
 }
 
 const INSTANCE_METHODS = [
@@ -105,4 +135,12 @@ function isCoordinatorClass(value: unknown): value is typeof ZsCoordinator {
         prototype !== null &&
         INSTANCE_METHODS.every((method) => method in prototype && typeof Reflect.get(prototype, method) === "function")
     );
+}
+
+function isSetLogHandler(value: unknown): value is typeof setLogHandler {
+    return typeof value === "function";
+}
+
+function isSetLogLevel(value: unknown): value is typeof setLogLevel {
+    return typeof value === "function";
 }

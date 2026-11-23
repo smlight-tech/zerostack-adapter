@@ -3,6 +3,8 @@
 
 mod cobs_link;
 mod convert;
+mod logging;
+mod mt_trace;
 mod transport;
 mod zs_backup;
 mod zs_protocol;
@@ -123,6 +125,44 @@ pub struct DeviceLeaveEvent {
 pub struct DisconnectedEvent {
     pub kind: &'static str,
     pub reason: String,
+}
+
+#[napi(object, object_from_js = false)]
+pub struct NativeLogRecord {
+    pub level: &'static str,
+    pub namespace: &'static str,
+    pub message: String,
+}
+
+#[napi(catch_unwind)]
+pub fn set_log_handler(
+    on_log: Either<Function<'_, NativeLogRecord, UnknownReturnValue>, Null>,
+) -> napi::Result<()> {
+    let callback = match on_log {
+        Either::A(func) => Some(
+            func.build_threadsafe_function::<logging::LogEntry>()
+                .callee_handled::<false>()
+                .weak::<true>()
+                .max_queue_size::<{ logging::LOG_QUEUE }>()
+                .build_callback(|ctx| {
+                    Ok(NativeLogRecord {
+                        level: ctx.value.level.as_js_str(),
+                        namespace: ctx.value.namespace,
+                        message: ctx.value.message,
+                    })
+                })?,
+        ),
+        Either::B(Null) => None,
+    };
+    logging::set_napi_handler(callback);
+    Ok(())
+}
+
+#[napi(catch_unwind)]
+pub fn set_log_level(level: String) -> napi::Result<()> {
+    let parsed = logging::LogLevel::parse(&level).map_err(napi::Error::from_reason)?;
+    logging::set_level(parsed);
+    Ok(())
 }
 
 pub type NativeEvent = Either4<ApsEvent, DeviceJoinedEvent, DeviceLeaveEvent, DisconnectedEvent>;

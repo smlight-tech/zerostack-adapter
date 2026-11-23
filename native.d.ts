@@ -129,6 +129,17 @@ export interface ZdoSend {
     timeoutMs: number;
 }
 
+export type NativeLogLevel = "off" | "error" | "warning" | "info" | "debug" | "trace";
+
+export interface NativeLogRecord {
+    level: "error" | "warning" | "info" | "debug";
+    namespace: "zh:zerostack" | "zh:zerostack:mt" | "zh:zerostack:transport";
+    message: string;
+}
+
+export declare function setLogHandler(onLog: ((record: NativeLogRecord) => void) | null): void;
+export declare function setLogLevel(level: NativeLogLevel): void;
+
 export declare class ZsCoordinator {
     static open(options: OpenOptions, onEvent: (events: NativeEvent[]) => void, timeoutMs: number): Promise<ZsCoordinator>;
     start(network: NetworkOptions, backup: NativeBackup | null, timeoutMs: number): Promise<StartResult>;

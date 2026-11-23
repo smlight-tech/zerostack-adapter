@@ -146,6 +146,10 @@ pub async fn open(
             } else {
                 FlowControl::None
             };
+            tracing::debug!(
+                target: "zh:zerostack:transport",
+                "opening serial transport {path} ({baud} baud, rtscts={rtscts})"
+            );
             let mut port = tokio_serial::new(&path, baud)
                 .data_bits(DataBits::Eight)
                 .parity(Parity::None)
@@ -160,6 +164,10 @@ pub async fn open(
             Ok(Box::new(port))
         }
         Address::Tcp(host, port) => {
+            tracing::debug!(
+                target: "zh:zerostack:transport",
+                "connecting TCP transport {host}:{port}"
+            );
             let bound = deadline.min(Instant::now() + CONNECT_TIMEOUT);
             let stream = timeout_at(bound, TcpStream::connect((host.as_str(), port)))
                 .await

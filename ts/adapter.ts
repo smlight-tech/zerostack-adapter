@@ -20,7 +20,8 @@ import type {ApsFrame, Broadcast, NativeBackup, NativeEvent, ZsCoordinator} from
 import {fromNativeBackup, toNativeBackup, toNativeNetworkOptions} from "./backup.js";
 import {callNative} from "./errors.js";
 import {Adapter, BackupUtils, loggerModule, readBackup, Waitress, Zcl, Zdo, ZSpec} from "./herdsman.js";
-import {type CoordinatorOpener, loadNativeCoordinator} from "./native.js";
+import {installNativeLogger, syncNativeLogLevel} from "./logging.js";
+import {addonForOpener, type CoordinatorOpener, loadNativeAddon} from "./native.js";
 import {adapterTarget, type ZsTarget} from "./path.js";
 import {type ZdoResponder, ZdoWaiters} from "./zdoWaiters.js";
 
@@ -134,7 +135,12 @@ function selectSourceEndpoint(sourceEndpoint: number | undefined, profileId: num
 }
 
 const PRODUCTION_ADDON: CoordinatorOpener = {
-    open: (...args) => loadNativeCoordinator().open(...args),
+    open: (...args) => {
+        const addon = loadNativeAddon();
+        installNativeLogger(addon);
+
+        return addon.ZsCoordinator.open(...args);
+    },
 };
 
 export interface ZsAdapter extends HerdsmanAdapter {
@@ -197,6 +203,12 @@ export function createZsAdapterClass(adapterBase: typeof HerdsmanAdapter): ZsAda
             const storedBackup = this.readStoredBackup();
             const network = toNativeNetworkOptions(this.networkOptions);
             const backup = storedBackup === undefined ? null : toNativeBackup(storedBackup);
+            const nativeAddon = addonForOpener(this.opener);
+            if (nativeAddon !== undefined) {
+                installNativeLogger(nativeAddon);
+            } else {
+                syncNativeLogLevel();
+            }
             const coordinator = await callNative(`open ${this.target.backend} ${this.target.transport}`, () =>
                 this.opener.open(
                     {

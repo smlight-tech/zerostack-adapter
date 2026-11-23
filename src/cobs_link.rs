@@ -360,6 +360,7 @@ struct InFlight {
     kind: Kind,
     cmd0: u8,
     cmd1: u8,
+    redacted_read: bool,
     wire: usize,
     bound: Instant,
     reply: Reply<Response>,
@@ -427,9 +428,15 @@ impl<P: Port> Engine<P> {
             tracing::warn!("discarding unsent output failed: {e}");
         }
         match outcome {
-            Ok(Exit::Closed(ack)) => drop(ack.send(())),
+            Ok(Exit::Closed(ack)) => {
+                tracing::debug!(target: "zh:zerostack:transport", "link closed");
+                let _ = ack.send(());
+            }
             Ok(Exit::Dropped) => {}
-            Err(_) => drop(self.inbound.send(Inbound::Down(reason)).await),
+            Err(_) => {
+                tracing::debug!(target: "zh:zerostack:transport", "link ended: {reason}");
+                drop(self.inbound.send(Inbound::Down(reason)).await);
+            }
         }
     }
 
@@ -551,6 +558,7 @@ impl<P: Port> Engine<P> {
         } else {
             0
         };
+        let redacted_read = crate::mt_trace::request_reads_sensitive(&r.frame);
         let wire = self.write(seq, &r.frame).await?;
         let bound = if r.kind == Kind::Startup {
             STARTUP_BOUND
@@ -563,6 +571,7 @@ impl<P: Port> Engine<P> {
             kind: r.kind,
             cmd0: r.frame.cmd0,
             cmd1: r.frame.cmd1,
+            redacted_read,
             wire,
             bound: Instant::now() + bound,
             reply: r.reply,
@@ -581,6 +590,13 @@ impl<P: Port> Engine<P> {
                 out
             }
         };
+        if crate::logging::enabled(crate::logging::LogLevel::Debug) {
+            crate::logging::emit(
+                crate::logging::LogLevel::Debug,
+                crate::logging::NS_MT,
+                crate::mt_trace::format_tx(frame),
+            );
+        }
         self.port
             .write_all(&bytes)
             .await
@@ -704,6 +720,13 @@ impl<P: Port> Engine<P> {
         if frame.cmd0 & TYPE_MASK == SRSP {
             return self.on_srsp(seq, frame);
         }
+        if crate::logging::enabled(crate::logging::LogLevel::Debug) {
+            crate::logging::emit(
+                crate::logging::LogLevel::Debug,
+                crate::logging::NS_MT,
+                crate::mt_trace::format_areq(&frame),
+            );
+        }
         if (frame.cmd0, frame.cmd1) == (AREQ | 0x01, 0x80) {
             return self.on_reset_ind(frame.data);
         }
@@ -721,11 +744,25 @@ impl<P: Port> Engine<P> {
             None => (!self.inflight.is_empty()).then_some(0),
         };
         let Some(p) = at.and_then(|i| self.inflight.remove(i)) else {
+            if crate::logging::enabled(crate::logging::LogLevel::Debug) {
+                crate::logging::emit(
+                    crate::logging::LogLevel::Debug,
+                    crate::logging::NS_MT,
+                    crate::mt_trace::format_srsp(&frame, None),
+                );
+            }
             return Err(ZsError::Transport(format!(
                 "SRSP 0x{:02x} 0x{:02x} answers no request in flight",
                 frame.cmd0, frame.cmd1
             )));
         };
+        if crate::logging::enabled(crate::logging::LogLevel::Debug) {
+            crate::logging::emit(
+                crate::logging::LogLevel::Debug,
+                crate::logging::NS_MT,
+                crate::mt_trace::format_srsp(&frame, Some(p.redacted_read)),
+            );
+        }
         self.used -= p.wire;
         self.seen_srsp = true;
         if (frame.cmd0, frame.cmd1) == (SRSP, 0x00) {
@@ -755,6 +792,13 @@ impl<P: Port> Engine<P> {
             self.cobs = CobsRx::default();
             self.shadow = Shadow::default();
             self.budget = usize::from(u16::from_le_bytes([d[3], d[4]])).max(1);
+            tracing::info!(
+                target: "zh:zerostack:transport",
+                "COBS-Mux negotiated (have=0x{:02x}, rx_budget={}, nodes={})",
+                d[2],
+                self.budget,
+                u16::from_le_bytes([d[5], d[6]]),
+            );
         }
         answer(
             p.reply,
@@ -771,6 +815,10 @@ impl<P: Port> Engine<P> {
         self.cobs = CobsRx::default();
         self.shadow = Shadow::default();
         self.budget = DEFAULT_BUDGET;
+        tracing::debug!(
+            target: "zh:zerostack:transport",
+            "link returned to legacy framing after SYS_RESET_IND"
+        );
         if let Some(waiter) = self.reset_wait.take() {
             answer(waiter, Ok(data));
             Ok(())
